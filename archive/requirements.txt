@@ -1,0 +1,5 @@
+streamlit
+diagrams
+openai
+python-dotenv
+watchdog
