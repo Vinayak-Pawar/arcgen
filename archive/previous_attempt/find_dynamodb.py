@@ -1,5 +1,6 @@
 import importlib
 import pkgutil
+# pyrefly: ignore [missing-import]
 import diagrams.aws
 
 def find_node(node_name, package):
