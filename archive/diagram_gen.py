@@ -24,4 +24,3 @@ def execute_diagram_code(code_str):
         numbered_code = "\n".join([f"{i+1}: {line}" for i, line in enumerate(code_str.splitlines())])
         print(f"FAILED CODE:\n{'-'*20}\n{numbered_code}\n{'-'*20}")
         raise RuntimeError(f"Failed to execute diagram code: {e}")
-
