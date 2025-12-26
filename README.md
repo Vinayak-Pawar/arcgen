@@ -70,10 +70,62 @@ Arcgen is an innovative AI-powered tool that bridges the gap between human langu
 - **CORS**: Configured for cross-origin requests
 - **Environment**: Python virtual environment
 
-### AI Provider
-- **Service**: NVIDIA NIM API
-- **Model**: meta/llama-3.1-70b-instruct
-- **Purpose**: Natural language to diagram structure conversion
+### AI Providers (Multi-Provider Support)
+Arcgen supports multiple LLM providers - choose the one that works best for you:
+
+- **NVIDIA NIM** (Default): meta/llama-3.1-70b-instruct
+- **OpenAI**: GPT-4, GPT-3.5-turbo, GPT-4o
+- **Anthropic**: Claude-3 Opus, Sonnet, Haiku
+- **Google**: Gemini Pro, Flash
+- **Azure OpenAI**: Azure-hosted models
+- **Ollama**: Local models (Llama, Mistral, etc.)
+- **Custom**: Self-hosted or other API-compatible endpoints
+
+### 🚀 Advanced Features
+
+#### Tool-Based Architecture
+Arcgen uses a sophisticated tool-based AI architecture inspired by next-ai-draw-io:
+- **display_diagram**: Creates new diagrams from scratch
+- **edit_diagram**: Makes targeted edits to existing diagrams
+- **get_shape_library**: Accesses professional cloud service icons
+- **append_diagram**: Continues large diagram generation
+
+#### Professional Shape Libraries
+Access to industry-standard shape libraries:
+- **AWS 4.0**: 1000+ AWS services with authentic icons
+- **Azure 2.0**: Microsoft cloud services
+- **Google Cloud**: GCP services and components
+- **Kubernetes**: Container orchestration symbols
+- **Cisco 19**: Networking equipment and diagrams
+- **Flowchart**: Standard flowchart symbols
+
+#### File Upload & Analysis
+Upload and analyze documents for diagram generation:
+- **PDF Processing**: Text extraction and content analysis
+- **Image Analysis**: Diagram replication and enhancement
+- **Document Intelligence**: Automatic system architecture detection
+
+#### Diagram History & Version Control
+- **Automatic Snapshots**: Every AI edit is saved
+- **Version Comparison**: View and restore previous versions
+- **Diagram Management**: Organize and search saved diagrams
+- **Export Options**: Save as .drawio, .svg, .png formats
+
+#### Streaming Generation
+Real-time diagram generation with progress updates:
+- **Live Progress**: See generation status in real-time
+- **Streaming Updates**: Incremental diagram building
+- **Error Handling**: Graceful failure recovery
+
+#### Production Deployment
+- **Docker Support**: Easy containerized deployment
+- **Docker Compose**: Multi-service orchestration
+- **Health Checks**: Automatic service monitoring
+- **Scalable Architecture**: Ready for production use
+- **Ollama**: Local models (no API key required)
+- **Custom**: Any OpenAI-compatible endpoint
+
+**Google Colab Style Configuration**: Just like `userdata.get('secretName')`, set environment variables for your API keys.
 
 ## 📦 Installation
 
@@ -158,6 +210,39 @@ Edit `backend/main.py` to customize:
 - **API endpoints**: Modify or add new endpoints
 - **AI model parameters**: Adjust temperature, max_tokens, etc.
 
+### LLM Provider Configuration
+
+Arcgen supports multiple AI providers. Configure your preferred provider using environment variables:
+
+1. **Copy the example configuration:**
+```bash
+cp env-example.txt .env
+```
+
+2. **Choose your provider and set API keys:**
+```bash
+# For OpenAI
+ARCGEN_LLM_PROVIDER=openai
+OPENAI_API_KEY=sk-your-openai-key-here
+
+# For Anthropic
+ARCGEN_LLM_PROVIDER=anthropic
+ANTHROPIC_API_KEY=sk-ant-your-anthropic-key-here
+
+# For Google Gemini
+ARCGEN_LLM_PROVIDER=google
+GOOGLE_API_KEY=your-google-api-key
+
+# For local Ollama (no API key needed)
+ARCGEN_LLM_PROVIDER=ollama
+ARCGEN_LLM_MODEL=llama2
+```
+
+3. **Test your configuration:**
+   - Open the app and click the settings icon (⚙️)
+   - Use the "Test Configuration" button
+   - Restart the backend server after changing environment variables
+
 ### Frontend Configuration
 
 Edit `frontend/src/app/page.tsx` to customize:
@@ -165,30 +250,130 @@ Edit `frontend/src/app/page.tsx` to customize:
 - **UI layout**: Modify panel sizes and positions
 - **Styling**: Update Tailwind classes
 
+## 🚀 Deployment
+
+### Quick Start with Docker (Recommended)
+
+1. **Prerequisites**
+   ```bash
+   # Install Docker and Docker Compose
+   # macOS: brew install docker docker-compose
+   # Ubuntu: sudo apt install docker.io docker-compose
+   ```
+
+2. **Deploy with Script** (Easiest)
+   ```bash
+   # Make script executable and run
+   chmod +x deploy.sh
+   ./deploy.sh
+   ```
+
+3. **Manual Docker Deployment**
+   ```bash
+   # Configure environment variables
+   cp env-example.txt .env
+   # Edit .env with your API keys
+
+   # Deploy
+   docker-compose up --build -d
+   ```
+
+4. **Access Arcgen**
+   - **Frontend**: http://localhost:3000
+   - **Backend API**: http://localhost:8000
+   - **API Docs**: http://localhost:8000/docs
+
+### Development Setup
+
+1. **Backend**
+   ```bash
+   cd backend
+   python -m venv venv
+   source venv/bin/activate  # Linux/Mac
+   pip install -r requirements.txt
+   python main.py
+   ```
+
+2. **Frontend**
+   ```bash
+   cd frontend
+   npm install
+   npm run dev
+   ```
+
 ## 📖 API Documentation
 
-### Generate Diagram Endpoint
+### Generate Diagram
 
 **Endpoint**: `POST /generate`
 
 **Request Body**:
 ```json
 {
-  "prompt": "Your system description here"
+  "prompt": "A user logs into a web application that connects to a database",
+  "llm_provider": "nvidia",     // optional: openai, anthropic, google, azure, ollama
+  "llm_api_key": "your-key",    // optional: overrides environment variable
+  "llm_model": "model-name"     // optional: specific model to use
 }
 ```
 
 **Response**:
 ```json
 {
-  "csv": "## Label: %label%\n## Style: ...\nid,label,shape,edge_target\n..."
+  "xml": "<mxCell id=\"2\" value=\"User\" style=\"ellipse;whiteSpace=wrap;html=1;\" vertex=\"1\" parent=\"1\"><mxGeometry x=\"40\" y=\"40\" width=\"80\" height=\"40\" as=\"geometry\"/></mxCell>",
+  "provider": "nvidia",
+  "model": "meta/llama-3.1-70b-instruct",
+  "tool_used": "display_diagram"
 }
 ```
 
-**Status Codes**:
-- `200`: Success
-- `401`: Missing NVIDIA API key
-- `500`: Server error
+### Streaming Generation
+
+**Endpoint**: `POST /generate-stream`
+
+**Request Body**: Same as `/generate`
+
+**Response**: Server-Sent Events with real-time progress updates
+
+### File Upload & Analysis
+
+**Endpoint**: `POST /upload-file`
+
+**Content-Type**: `multipart/form-data`
+
+**Parameters**:
+- `file`: PDF or image file (max 10MB)
+
+**Response**:
+```json
+{
+  "filename": "document.pdf",
+  "content_type": "pdf",
+  "metadata": {"page_count": 5, "title": "..."},
+  "summary": "Document analysis summary",
+  "processed": true
+}
+```
+
+### Shape Libraries
+
+**Endpoints**:
+- `GET /shape-libraries` - List available libraries
+- `GET /shape-libraries/{library_name}` - Get library details
+
+### Diagram History
+
+**Endpoints**:
+- `GET /history/list` - List saved diagrams
+- `GET /history/{diagram_id}` - Get diagram versions
+- `POST /history/save` - Save diagram version
+- `DELETE /history/{diagram_id}` - Delete diagram
+
+### Provider Management
+
+**Endpoints**:
+- `GET /providers` - List available LLM providers
+- `POST /test-provider` - Test provider configuration
 
 ### Health Check
 
@@ -201,17 +386,38 @@ Edit `frontend/src/app/page.tsx` to customize:
 }
 ```
 
-## 🎨 CSV Format
+## 🎨 XML Format
 
-Arcgen uses draw.io's CSV format for diagram generation:
+Arcgen generates diagrams in draw.io's native XML format for maximum compatibility and professional appearance:
 
-```csv
-## Label: %label%
-## Style: shape=%shape%;whiteSpace=wrap;html=1;
-## Connect: {"from": "edge_target", "to": "id", "style": "curved=1;"}
-id,label,shape,edge_target
-1,User,actor,2
-2,API Gateway,rectangle,3
+```xml
+<mxCell id="2" value="User" style="ellipse;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+  <mxGeometry x="40" y="40" width="80" height="40" as="geometry"/>
+</mxCell>
+<mxCell id="3" value="API Gateway" style="rectangle;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+  <mxGeometry x="160" y="40" width="120" height="60" as="geometry"/>
+</mxCell>
+<mxCell id="4" style="endArrow=classic;html=1;" edge="1" parent="1" source="2" target="3">
+  <mxGeometry relative="1" as="geometry"/>
+</mxCell>
+```
+
+### Shape Libraries
+
+Arcgen supports professional shape libraries for cloud and technical diagrams:
+
+- **AWS 4.0**: `shape=mxgraph.aws4.ec2` - Authentic AWS service icons
+- **Azure 2.0**: `shape=mxgraph.azure2.virtual_machine` - Microsoft cloud services
+- **Google Cloud**: `shape=mxgraph.gcp2.compute_engine` - GCP components
+- **Kubernetes**: `shape=mxgraph.kubernetes.pod` - Container orchestration
+- **Cisco**: `shape=mxgraph.cisco19.router` - Network equipment
+
+### Layout Constraints
+
+- **Viewport**: Elements positioned within x: 0-800, y: 0-600
+- **Spacing**: 120px apart, starting from margins (x=40, y=40)
+- **Sizes**: Shapes 80-120px wide, 40-60px tall
+- **Connections**: Relative geometry with curved arrows
 3,Service,rounded=1,
 ```
 
@@ -245,8 +451,9 @@ Contributions are welcome! This project aims to make system design accessible to
 
 ## 🗺️ Roadmap
 
-- [ ] **Phase 1**: ✅ Basic architecture with Next.js + FastAPI
-- [ ] **Phase 2**: 🚧 Full NVIDIA API integration for diagram generation
+- [x] **Phase 1**: ✅ Basic architecture with Next.js + FastAPI
+- [x] **Phase 2**: ✅ Multi-provider LLM integration for diagram generation
+- [x] **Phase 2.1**: ✅ Google Colab-style API key management
 - [ ] **Phase 3**: Database integration (SQLite) for prompt history
 - [ ] **Phase 4**: Support for multiple diagram types (Cloud, DevOps, Security)
 - [ ] **Phase 5**: Template library for common architectures

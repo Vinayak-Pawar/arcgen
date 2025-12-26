@@ -1,0 +1,16 @@
+{
+  "diagram_id": "a89d7ba4-1a63-4637-920f-7e154e452e8f",
+  "versions": [
+    {
+      "id": "47174e5c-5782-439c-b451-7686d6cd3f55",
+      "timestamp": "2025-12-26 11:47:09.715842",
+      "prompt": "",
+      "xml_content": "<mxCell id=\"2\" value=\"Test\" vertex=\"1\" parent=\"1\"/>",
+      "provider": "unknown",
+      "model": "unknown",
+      "metadata": {}
+    }
+  ],
+  "created_at": "2025-12-26 11:47:09.715933",
+  "updated_at": "2025-12-26 11:47:09.715934"
+}

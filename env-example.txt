@@ -1,0 +1,74 @@
+# Arcgen LLM Configuration Examples
+# Copy this file to .env and set your preferred LLM provider
+
+# =============================================================================
+# CHOOSE YOUR LLM PROVIDER (uncomment one)
+# =============================================================================
+
+# Default: NVIDIA NIM (current setup)
+ARCGEN_LLM_PROVIDER=nvidia
+NVIDIA_API_KEY=your_nvidia_api_key_here
+
+# Alternative: OpenAI GPT models
+# ARCGEN_LLM_PROVIDER=openai
+# OPENAI_API_KEY=sk-your-openai-key-here
+# ARCGEN_LLM_MODEL=gpt-4  # Optional: override default model
+
+# Alternative: Anthropic Claude models
+# ARCGEN_LLM_PROVIDER=anthropic
+# ANTHROPIC_API_KEY=sk-ant-your-anthropic-key-here
+# ARCGEN_LLM_MODEL=claude-3-sonnet-20240229  # Optional
+
+# Alternative: Google Gemini models
+# ARCGEN_LLM_PROVIDER=google
+# GOOGLE_API_KEY=your-google-api-key-here
+# ARCGEN_LLM_MODEL=gemini-pro  # Optional
+
+# Alternative: Local Ollama models (no API key needed)
+# ARCGEN_LLM_PROVIDER=ollama
+# ARCGEN_LLM_MODEL=llama2  # Must match your local Ollama model
+
+# Alternative: Custom OpenAI-compatible endpoint
+# ARCGEN_LLM_PROVIDER=custom
+# CUSTOM_API_KEY=your-custom-api-key
+# ARCGEN_CUSTOM_BASE_URL=https://your-custom-endpoint.com/v1
+# ARCGEN_LLM_MODEL=custom-model-name
+
+# =============================================================================
+# OPTIONAL: Fine-tune LLM behavior
+# =============================================================================
+
+# Temperature (0.0 = deterministic, 1.0 = creative)
+# ARCGEN_LLM_TEMPERATURE=0.2
+
+# Maximum tokens in response
+# ARCGEN_LLM_MAX_TOKENS=2048
+
+# Top-p sampling
+# ARCGEN_LLM_TOP_P=0.7
+
+# =============================================================================
+# SETUP INSTRUCTIONS
+# =============================================================================
+
+# 1. Copy this file to .env: cp env-example.txt .env
+# 2. Uncomment your preferred provider section above
+# 3. Get API keys from the respective providers:
+#    - NVIDIA: https://build.nvidia.com/
+#    - OpenAI: https://platform.openai.com/api-keys
+#    - Anthropic: https://console.anthropic.com/
+#    - Google: https://makersuite.google.com/app/apikey
+#    - Ollama: Install locally from https://ollama.ai/
+# 4. Restart the backend server
+
+# =============================================================================
+# GOOGLE COLAB STYLE USAGE
+# =============================================================================
+
+# In your code, you can access secrets like this:
+# from config import get_secret
+# api_key = get_secret('OPENAI_API_KEY')
+
+# Or use environment variables directly:
+# import os
+# api_key = os.getenv('OPENAI_API_KEY')

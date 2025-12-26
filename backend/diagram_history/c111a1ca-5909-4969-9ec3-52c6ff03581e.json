@@ -1,0 +1,16 @@
+{
+  "diagram_id": "c111a1ca-5909-4969-9ec3-52c6ff03581e",
+  "versions": [
+    {
+      "id": "fe5cab53-1bd4-48c3-ace1-4b7127e29bfb",
+      "timestamp": "2025-12-26 11:42:48.899689",
+      "prompt": "S3 Bucket connected to EC2 Instance",
+      "xml_content": "<mxCell id=\"2\" value=\"S3 Bucket\" style=\"shape=mxgraph.aws4.s3_bucket;whiteSpace=wrap;html=1;\" vertex=\"1\" parent=\"1\">\n  <mxGeometry x=\"40\" y=\"40\" width=\"120\" height=\"60\" as=\"geometry\"/>\n</mxCell>\n\n<mxCell id=\"3\" value=\"EC2 Instance\" style=\"shape=mxgraph.aws4.ec2;whiteSpace=wrap;html=1;\" vertex=\"1\" parent=\"1\">\n  <mxGeometry x=\"160\" y=\"40\" width=\"120\" height=\"60\" as=\"geometry\"/>\n</mxCell>\n\n<mxCell id=\"4\" style=\"endArrow=classic;html=1;rounded=0;\" edge=\"1\" parent=\"1\" source=\"2\" target=\"3\">\n  <mxGeometry relative=\"1\" as=\"geometry\"/>\n</mxCell>",
+      "provider": "nvidia",
+      "model": "meta/llama-3.1-70b-instruct",
+      "metadata": {}
+    }
+  ],
+  "created_at": "2025-12-26 11:42:48.899728",
+  "updated_at": "2025-12-26 11:42:48.899729"
+}

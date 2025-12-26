@@ -2,3 +2,13 @@ fastapi
 uvicorn
 openai
 python-dotenv
+httpx
+pydantic
+anthropic
+google-generativeai
+azure-identity
+ollama
+PyMuPDF
+Pillow
+python-multipart
+PyPDF2
