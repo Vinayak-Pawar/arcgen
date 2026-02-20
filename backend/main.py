@@ -8,7 +8,7 @@ import json
 from pydantic import BaseModel
 # pyrefly: ignore [missing-import]
 from fastapi.middleware.cors import CORSMiddleware
-from ai_providers import get_ai_provider_manager, ClientOverrides, Provider
+from llm_manager import get_ai_provider_manager, ClientOverrides, Provider
 from diagram_history import get_history_manager
 from file_processor import get_file_processor
 from datetime import datetime
@@ -552,13 +552,13 @@ Generate diagram XML for: {request.prompt}"""
             }
 
         elif result["type"] == "edit_diagram":
-            # For now, return the edits - frontend will need to handle this later
+            # Return the operations for the frontend to apply
             return {
-                "edits": result["edits"],
+                "operations": result.get("operations", []),
                 "provider": config.provider.value,
                 "model": config.model_id,
                 "tool_used": "edit_diagram",
-                "message": "Diagram edits generated - incremental editing not yet implemented"
+                "message": "Edit operations generated - apply to current diagram"
             }
 
         elif result["type"] == "shape_library":
@@ -586,6 +586,27 @@ Generate diagram XML for: {request.prompt}"""
             )
 
     except Exception as e:
+        # Log the error for debugging
+        print(f"Error generating diagram: {str(e)}")
+
+        # Return user-friendly error messages based on error type
+        error_msg = str(e)
+        provider_name = config.provider.value.title() if 'config' in locals() else "AI Provider"
+
+        if "API key" in error_msg.lower() or "401" in error_msg or "unauthorized" in error_msg.lower():
+            raise HTTPException(
+                status_code=401,
+                detail=f"Invalid or missing API key for {provider_name}. Please check your API key configuration."
+            )
+        elif "rate limit" in error_msg.lower() or "429" in error_msg:
+            raise HTTPException(status_code=429, detail="API rate limit exceeded. Please wait a moment and try again.")
+        elif "timeout" in error_msg.lower():
+            raise HTTPException(status_code=408, detail="Request timed out. Please try again.")
+        elif "connection" in error_msg.lower():
+            raise HTTPException(status_code=503, detail=f"Connection error with {provider_name}. Please check your internet connection and try again.")
+        else:
+            raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
 
 @app.post("/generate-stream")
 async def generate_diagram_stream(request: DesignRequest):
@@ -652,26 +673,63 @@ Generate diagram XML for: {request.prompt}"""
                     xml_content = result["xml"]
                     # Validate XML format
                     if not validate_xml_format(xml_content):
-                        yield f"data: {json.dumps({'type': 'error', 'message': 'AI generated invalid diagram format', 'progress': 100})}\n\n"
+                        error_data = json.dumps({'type': 'error', 'message': 'AI generated invalid diagram format', 'progress': 100})
+                        yield f"data: {error_data}\n\n"
                         return
 
                     # Send final result
-                    yield f"data: {json.dumps({\n                        'type': 'complete',\n                        'xml': xml_content.strip(),\n                        'provider': config.provider.value,\n                        'model': config.model_id,\n                        'tool_used': 'display_diagram',\n                        'progress': 100\n                    })}\n\n"
+                    complete_data = json.dumps({
+                        'type': 'complete',
+                        'xml': xml_content.strip(),
+                        'provider': config.provider.value,
+                        'model': config.model_id,
+                        'tool_used': 'display_diagram',
+                        'progress': 100
+                    })
+                    yield f"data: {complete_data}\n\n"
 
                 elif result["type"] == "edit_diagram":
-                    yield f"data: {json.dumps({\n                        'type': 'complete',\n                        'edits': result['edits'],\n                        'provider': config.provider.value,\n                        'model': config.model_id,\n                        'tool_used': 'edit_diagram',\n                        'message': 'Diagram edits generated - incremental editing not yet implemented',\n                        'progress': 100\n                    })}\n\n"
+                    edit_data = json.dumps({
+                        'type': 'complete',
+                        'operations': result.get('operations', []),
+                        'provider': config.provider.value,
+                        'model': config.model_id,
+                        'tool_used': 'edit_diagram',
+                        'message': 'Edit operations generated - apply to current diagram',
+                        'progress': 100
+                    })
+                    yield f"data: {edit_data}\n\n"
 
                 elif result["type"] == "shape_library":
-                    yield f"data: {json.dumps({\n                        'type': 'complete',\n                        'library_info': result['info'],\n                        'library': result['library'],\n                        'provider': config.provider.value,\n                        'model': config.model_id,\n                        'tool_used': 'get_shape_library',\n                        'progress': 100\n                    })}\n\n"
+                    library_data = json.dumps({
+                        'type': 'complete',
+                        'library_info': result['info'],
+                        'library': result['library'],
+                        'provider': config.provider.value,
+                        'model': config.model_id,
+                        'tool_used': 'get_shape_library',
+                        'progress': 100
+                    })
+                    yield f"data: {library_data}\n\n"
 
                 elif result["type"] == "text":
-                    yield f"data: {json.dumps({\n                        'type': 'complete',\n                        'text_response': result['content'],\n                        'provider': config.provider.value,\n                        'model': config.model_id,\n                        'tool_used': 'text_fallback',\n                        'progress': 100\n                    })}\n\n"
+                    text_data = json.dumps({
+                        'type': 'complete',
+                        'text_response': result['content'],
+                        'provider': config.provider.value,
+                        'model': config.model_id,
+                        'tool_used': 'text_fallback',
+                        'progress': 100
+                    })
+                    yield f"data: {text_data}\n\n"
 
                 else:
-                    yield f"data: {json.dumps({'type': 'error', 'message': f'Unknown result type: {result[\"type\"]}', 'progress': 100})}\n\n"
+                    unknown_data = json.dumps({'type': 'error', 'message': 'Unknown result type: ' + str(result.get("type", "unknown")), 'progress': 100})
+                    yield f"data: {unknown_data}\n\n"
 
             except Exception as e:
-                yield f"data: {json.dumps({'type': 'error', 'message': f'Generation failed: {str(e)}', 'progress': 100})}\n\n"
+                error_data = json.dumps({'type': 'error', 'message': 'Generation failed: ' + str(e), 'progress': 100})
+                yield f"data: {error_data}\n\n"
 
         return StreamingResponse(
             generate_stream(),
@@ -710,21 +768,21 @@ Generate diagram XML for: {request.prompt}"""
 @app.get("/test-shape-libraries")
 async def test_get_shape_libraries():
     """Test endpoint for shape libraries"""
-    from tools import shape_library_manager
+    from tool_definitions import shape_library_manager
     libraries = shape_library_manager.list_available_libraries()
     return {"libraries": libraries, "test": True}
 
 @app.get("/shape-libraries")
 async def get_shape_libraries():
     """Get available shape libraries for diagram creation"""
-    from tools import shape_library_manager
+    from tool_definitions import shape_library_manager
     libraries = shape_library_manager.list_available_libraries()
     return {"libraries": libraries}
 
 @app.get("/shape-libraries/{library_name}")
 async def get_shape_library_info(library_name: str):
     """Get detailed information about a specific shape library"""
-    from tools import shape_library_manager
+    from tool_definitions import shape_library_manager
     info = shape_library_manager.get_library_info(library_name)
     if not info:
         raise HTTPException(status_code=404, detail=f"Shape library '{library_name}' not found")
@@ -1004,29 +1062,7 @@ async def update_llm_config(request: dict):
         raise HTTPException(status_code=400, detail=f"Configuration test failed: {str(e)}")
 
 
-# File Upload Endpoints
-@app.post("/upload-file")
-async def upload_file(file: UploadFile = File(...)):
-    """Upload and process a file (PDF or image) for diagram generation"""
-    try:
-        file_processor = get_file_processor()
-
-        # Read file content
-        file_content = await file.read()
-
-        # Process the file
-        processed_data = file_processor.process_file(file_content, file.filename)
-
-        return {
-            "filename": file.filename,
-            "content_type": processed_data["content_type"],
-            "metadata": processed_data["metadata"],
-            "summary": processed_data["summary"],
-            "processed": True
-        }
-
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"File processing failed: {str(e)}")
+# File Upload Endpoints (using file_processor module)
 
 
 @app.post("/generate-from-file")

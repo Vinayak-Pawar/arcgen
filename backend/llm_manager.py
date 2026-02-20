@@ -1,239 +1,577 @@
 """
-LLM Manager for Arcgen
-
-Dynamically routes to different LLM providers based on user configuration.
-Supports OpenAI, Anthropic, Google Gemini, NVIDIA NIM, Ollama, and custom endpoints.
+Multi-Provider AI System for Arcgen
+Adapted from next-ai-draw-io's ai-providers.ts
+Supports OpenAI, Anthropic, Google, Azure, Ollama, and NVIDIA
 """
 
+import os
+from enum import Enum
+from typing import Optional, Dict, Any, List, AsyncGenerator
+from pydantic import BaseModel
 import json
-from typing import Optional, Dict, Any
-from config import LLMConfig, LLMProvider, get_api_key
-import httpx
+import openai
+from anthropic import Anthropic
+import google.generativeai as genai
+from tool_definitions import get_tools_for_ai, validate_tool_call, shape_library_manager
+from azure.identity import DefaultAzureCredential
+from azure.core.credentials import AzureKeyCredential
+from ollama import Client as OllamaClient
 
 
-class LLMManager:
-    """Manages LLM API calls for different providers"""
+class Provider(str, Enum):
+    """Supported AI providers"""
+    OPENAI = "openai"
+    ANTHROPIC = "anthropic"
+    GOOGLE = "google"
+    AZURE = "azure"
+    OLLAMA = "ollama"
+    NVIDIA = "nvidia"
 
-    def __init__(self, config: LLMConfig):
-        self.config = config
-        self.api_key = get_api_key(config)
 
-    async def generate_csv(self, prompt: str) -> str:
-        """
-        Generate CSV diagram from natural language prompt using configured LLM
-        """
-        full_prompt = self._build_csv_prompt(prompt)
+class AIModelConfig(BaseModel):
+    """Configuration for AI model"""
+    provider: Provider
+    model_id: str
+    api_key: Optional[str] = None
+    base_url: Optional[str] = None
+    temperature: Optional[float] = 0.2
+    max_tokens: Optional[int] = 2048
+    reasoning_budget_tokens: Optional[int] = None
+    custom_headers: Optional[Dict[str, str]] = None
 
-        if self.config.provider == LLMProvider.OPENAI:
-            return await self._call_openai(full_prompt)
-        elif self.config.provider == LLMProvider.ANTHROPIC:
-            return await self._call_anthropic(full_prompt)
-        elif self.config.provider == LLMProvider.GOOGLE:
-            return await self._call_google(full_prompt)
-        elif self.config.provider == LLMProvider.NVIDIA:
-            return await self._call_nvidia(full_prompt)
-        elif self.config.provider == LLMProvider.OLLAMA:
-            return await self._call_ollama(full_prompt)
-        elif self.config.provider == LLMProvider.CUSTOM:
-            return await self._call_custom(full_prompt)
+
+class ClientOverrides(BaseModel):
+    """Client-side overrides for provider configuration"""
+    provider: Optional[str] = None
+    api_key: Optional[str] = None
+    base_url: Optional[str] = None
+    model_id: Optional[str] = None
+    temperature: Optional[float] = None
+
+
+# Provider-specific environment variable mappings
+PROVIDER_ENV_VARS = {
+    Provider.OPENAI: "OPENAI_API_KEY",
+    Provider.ANTHROPIC: "ANTHROPIC_API_KEY",
+    Provider.GOOGLE: "GOOGLE_API_KEY",
+    Provider.AZURE: "AZURE_API_KEY",
+    Provider.OLLAMA: None,  # No API key needed
+    Provider.NVIDIA: "NVIDIA_API_KEY",
+}
+
+# Allowed client-provided providers (for security)
+ALLOWED_CLIENT_PROVIDERS = [
+    Provider.OPENAI,
+    Provider.ANTHROPIC,
+    Provider.GOOGLE,
+    Provider.AZURE,
+    Provider.NVIDIA,
+]
+
+
+class AIProviderManager:
+    """Manages multiple AI providers and their clients"""
+
+    def __init__(self):
+        self._clients = {}
+        self._current_config: Optional[AIModelConfig] = None
+
+    def get_model_config(self, overrides: Optional[ClientOverrides] = None) -> AIModelConfig:
+        """Get AI model configuration with optional overrides"""
+
+        # Determine provider
+        provider_str = overrides.provider if overrides and overrides.provider else os.getenv("AI_PROVIDER", "nvidia")
+        try:
+            provider = Provider(provider_str.lower())
+        except ValueError:
+            provider = Provider.NVIDIA
+
+        # Get model ID
+        model_id = overrides.model_id if overrides and overrides.model_id else os.getenv("AI_MODEL")
+        if not model_id:
+            # Default models for each provider
+            default_models = {
+                Provider.OPENAI: "gpt-4o",
+                Provider.ANTHROPIC: "claude-3-5-sonnet-20241022",
+                Provider.GOOGLE: "gemini-pro",
+                Provider.AZURE: "gpt-4o",
+                Provider.OLLAMA: "llama3.2",
+                Provider.NVIDIA: "meta/llama-3.1-70b-instruct",
+            }
+            model_id = default_models.get(provider, "meta/llama-3.1-70b-instruct")
+
+        # Get API key (client override takes precedence for security)
+        api_key = None
+        if overrides and overrides.api_key:
+            api_key = overrides.api_key
         else:
-            raise ValueError(f"Unsupported LLM provider: {self.config.provider}")
+            env_var = PROVIDER_ENV_VARS.get(provider)
+            if env_var:
+                api_key = os.getenv(env_var)
 
-    def _build_csv_prompt(self, user_prompt: str) -> str:
-        """Build the CSV generation prompt"""
-        return f"""You are an expert system architect specializing in creating draw.io diagrams from natural language descriptions.
+        # Get base URL
+        base_url = overrides.base_url if overrides and overrides.base_url else None
+        if not base_url:
+            # Default base URLs
+            default_urls = {
+                Provider.OPENAI: "https://api.openai.com/v1",
+                Provider.ANTHROPIC: "https://api.anthropic.com",
+                Provider.GOOGLE: "https://generativelanguage.googleapis.com",
+                Provider.AZURE: None,  # Uses resource name
+                Provider.OLLAMA: "http://localhost:11434",
+                Provider.NVIDIA: "https://integrate.api.nvidia.com/v1",
+            }
+            base_url = default_urls.get(provider)
 
-Your task is to generate a CSV format diagram that draw.io can understand. Follow this exact structure:
+        # Get temperature
+        temperature = overrides.temperature if overrides and overrides.temperature else float(os.getenv("TEMPERATURE", "0.2"))
 
-## Label: %label%
-## Style: shape=%shape%;whiteSpace=wrap;html=1;
-## Connect: {{"from": "edge_target", "to": "id", "style": "curved=1;endArrow=blockThin;endFill=1;"}}
-id,label,shape,edge_target
+        config = AIModelConfig(
+            provider=provider,
+            model_id=model_id,
+            api_key=api_key,
+            base_url=base_url,
+            temperature=temperature,
+        )
 
-IMPORTANT: The CSV must have exactly 4 columns: id,label,shape,edge_target
+        self._current_config = config
+        return config
 
-Rules:
-1. 'id': Unique sequential numbers starting from 1
-2. 'label': Display text for the component (keep under 20 characters)
-3. 'shape': Visual appearance (rectangle, rounded=1, actor, ellipse, hexagon, parallelogram, diamond)
-4. 'edge_target': ID of component this connects TO (leave empty if no connection)
+    def get_client(self, config: AIModelConfig):
+        """Get or create client for the given configuration"""
+        cache_key = f"{config.provider.value}:{config.model_id}:{config.base_url}"
 
-Shape guidelines:
-- actor: Users/clients
-- rectangle: Services, databases, applications
-- rounded=1: Processes, actions
-- ellipse: External systems, clouds
-- hexagon: Databases, storage
-- diamond: Decisions, gateways
-- parallelogram: Data flows, queues
+        if cache_key in self._clients:
+            return self._clients[cache_key]
 
-Flow: Start with user/client, create logical left-to-right flow.
+        client = None
 
-Output ONLY the CSV content with proper headers and data rows. No explanations.
-
-System Description: {user_prompt}
-
-Generate the CSV diagram:"""
-
-    async def _call_openai(self, prompt: str) -> str:
-        """Call OpenAI API"""
         try:
-            from openai import OpenAI
-            client = OpenAI(api_key=self.api_key, base_url=self.config.base_url)
-
-            response = client.chat.completions.create(
-                model=self.config.model,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=self.config.temperature,
-                max_tokens=self.config.max_tokens,
-                top_p=self.config.top_p
-            )
-            return response.choices[0].message.content
-        except Exception as e:
-            raise Exception(f"OpenAI API error: {str(e)}")
-
-    async def _call_anthropic(self, prompt: str) -> str:
-        """Call Anthropic API"""
-        try:
-            async with httpx.AsyncClient() as client:
-                response = await client.post(
-                    f"{self.config.base_url}/v1/messages",
-                    headers={
-                        "x-api-key": self.api_key,
-                        "anthropic-version": "2023-06-01",
-                        "content-type": "application/json"
-                    },
-                    json={
-                        "model": self.config.model,
-                        "max_tokens": self.config.max_tokens,
-                        "temperature": self.config.temperature,
-                        "messages": [{"role": "user", "content": prompt}]
-                    },
-                    timeout=60.0
+            if config.provider == Provider.OPENAI:
+                client = openai.OpenAI(
+                    api_key=config.api_key,
+                    base_url=config.base_url,
                 )
-                response.raise_for_status()
-                result = response.json()
-                return result["content"][0]["text"]
-        except Exception as e:
-            raise Exception(f"Anthropic API error: {str(e)}")
-
-    async def _call_google(self, prompt: str) -> str:
-        """Call Google Gemini API"""
-        try:
-            async with httpx.AsyncClient() as client:
-                response = await client.post(
-                    f"{self.config.base_url}/v1beta/models/{self.config.model}:generateContent",
-                    params={"key": self.api_key},
-                    json={
-                        "contents": [{"parts": [{"text": prompt}]}],
-                        "generationConfig": {
-                            "temperature": self.config.temperature,
-                            "maxOutputTokens": self.config.max_tokens,
-                            "topP": self.config.top_p
-                        }
-                    },
-                    timeout=60.0
+            elif config.provider == Provider.ANTHROPIC:
+                client = Anthropic(
+                    api_key=config.api_key,
+                    base_url=config.base_url,
                 )
-                response.raise_for_status()
-                result = response.json()
-                return result["candidates"][0]["content"]["parts"][0]["text"]
-        except Exception as e:
-            raise Exception(f"Google API error: {str(e)}")
-
-    async def _call_nvidia(self, prompt: str) -> str:
-        """Call NVIDIA NIM API (current implementation)"""
-        try:
-            from openai import OpenAI
-            client = OpenAI(
-                base_url=self.config.base_url,
-                api_key=self.api_key
-            )
-
-            response = client.chat.completions.create(
-                model=self.config.model,
-                messages=[
-                    {"role": "system", "content": "You are a system architecture expert that creates draw.io CSV diagrams."},
-                    {"role": "user", "content": prompt}
-                ],
-                temperature=self.config.temperature,
-                max_tokens=self.config.max_tokens,
-                top_p=self.config.top_p
-            )
-            return response.choices[0].message.content
-        except Exception as e:
-            raise Exception(f"NVIDIA API error: {str(e)}")
-
-    async def _call_ollama(self, prompt: str) -> str:
-        """Call local Ollama API"""
-        try:
-            async with httpx.AsyncClient() as client:
-                response = await client.post(
-                    f"{self.config.base_url}/chat/completions",
-                    json={
-                        "model": self.config.model,
-                        "messages": [{"role": "user", "content": prompt}],
-                        "stream": False,
-                        "options": {
-                            "temperature": self.config.temperature,
-                            "num_predict": self.config.max_tokens,
-                            "top_p": self.config.top_p
-                        }
-                    },
-                    timeout=120.0  # Ollama can be slower
+            elif config.provider == Provider.GOOGLE:
+                genai.configure(api_key=config.api_key)
+                client = genai.GenerativeModel(config.model_id)
+            elif config.provider == Provider.AZURE:
+                # Azure OpenAI setup
+                if config.base_url:
+                    client = openai.AzureOpenAI(
+                        api_key=config.api_key,
+                        azure_endpoint=config.base_url,
+                        api_version="2024-02-01",
+                    )
+                else:
+                    # Use resource name approach
+                    resource_name = os.getenv("AZURE_RESOURCE_NAME")
+                    if resource_name:
+                        client = openai.AzureOpenAI(
+                            api_key=config.api_key,
+                            azure_endpoint=f"https://{resource_name}.openai.azure.com/",
+                            api_version="2024-02-01",
+                        )
+            elif config.provider == Provider.OLLAMA:
+                client = OllamaClient(host=config.base_url or "http://localhost:11434")
+            elif config.provider == Provider.NVIDIA:
+                # NVIDIA uses OpenAI-compatible API
+                client = openai.OpenAI(
+                    api_key=config.api_key,
+                    base_url=config.base_url,
                 )
-                response.raise_for_status()
-                result = response.json()
-                return result["choices"][0]["message"]["content"]
-        except Exception as e:
-            raise Exception(f"Ollama API error: {str(e)}. Make sure Ollama is running locally.")
 
-    async def _call_custom(self, prompt: str) -> str:
-        """Call custom OpenAI-compatible API"""
+        except Exception as e:
+            raise ValueError(f"Failed to initialize {config.provider.value} client: {str(e)}")
+
+        if client:
+            self._clients[cache_key] = client
+
+        return client
+
+    async def generate_diagram(self, prompt: str, config: AIModelConfig) -> Dict[str, Any]:
+        """Generate diagram using tool-based architecture"""
+        client = self.get_client(config)
+
+        if not client:
+            raise ValueError(f"No client available for provider {config.provider.value}")
+
+        # Enhanced system prompt with tool instructions (based on next-ai-draw-io)
+        system_prompt = """You are an expert diagram creation assistant specializing in draw.io XML generation.
+Your primary function is creating clear, well-organized visual diagrams through precise XML specifications.
+
+When you are asked to create a diagram, briefly describe your plan about the layout and structure to avoid object overlapping or edge crossing the objects. (2-3 sentences max), then use display_diagram tool to generate the XML.
+After generating or editing a diagram, you don't need to say anything. The user can see the diagram - no need to describe it.
+
+## App Context
+You are an AI agent inside a web app with draw.io diagram editor. You can read and modify diagrams by generating draw.io XML code through tool calls.
+
+## Available Tools
+---Tool1: display_diagram---
+Display a NEW diagram on draw.io. Use when creating from scratch or major structural changes needed.
+Parameters: { xml: string }
+
+---Tool2: edit_diagram---
+Edit specific parts of the EXISTING diagram by ID-based operations.
+Parameters: { operations: Array<{operation: "update"|"add"|"delete", cell_id: string, new_xml?: string}> }
+- update: Replace cell by id. Provide cell_id and new_xml (complete mxCell element).
+- add: Add new cell. Provide cell_id (new unique id) and new_xml.
+- delete: Remove cell. Only cell_id needed.
+⚠️ JSON ESCAPING: Every " inside new_xml MUST be escaped as \\". Example: id=\\"5\\" value=\\"Label\\"
+
+---Tool3: append_diagram---
+Continue generating XML when display_diagram was truncated. Only use after truncation error.
+Parameters: { xml: string }
+
+---Tool4: get_shape_library---
+Get shape/icon library documentation for cloud/tech icons.
+Parameters: { library: string }
+Available: aws4, azure2, gcp2, kubernetes, cisco19, flowchart, bpmn, network, rack
+
+## Tool Selection Guide
+- display_diagram: New diagrams, major restructuring, empty canvas
+- edit_diagram: Small changes, adding/removing elements, changing labels/colors
+- append_diagram: ONLY after display_diagram truncation
+- get_shape_library: BEFORE creating cloud architecture diagrams (call FIRST)
+
+## Layout Constraints (CRITICAL)
+- Keep ALL elements within viewport: x=0-800, y=0-600
+- Maximum container size: 700×550 pixels
+- Start from margins (x=40, y=40), keep elements grouped closely
+- Use compact layouts that fit entire diagram in one view
+- Minimum 50px gap between all elements for edge routing
+
+## XML Generation Rules
+- Generate ONLY mxCell elements - NO wrapper tags (<mxfile>, <mxGraphModel>, <root>)
+- Do NOT include root cells (id="0" or id="1") - added automatically
+- ALL mxCell elements must be siblings - NEVER nested
+- Use vertex="1" for shapes, edge="1" for connectors
+- Start IDs from "2" (0 and 1 are reserved)
+- Use parent="1" for top-level shapes
+- NEVER include XML comments (<!-- ... -->) - they break edit_diagram
+- Return XML only via tool calls, never in text
+
+## Shape Example
+<mxCell id="2" value="Label" style="rounded=1;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+  <mxGeometry x="100" y="100" width="120" height="60" as="geometry"/>
+</mxCell>
+
+## Connector Example
+<mxCell id="3" style="endArrow=classic;html=1;" edge="1" parent="1" source="2" target="4">
+  <mxGeometry relative="1" as="geometry"/>
+</mxCell>
+
+## Edge Routing Rules (CRITICAL - Avoid Overlaps)
+
+### Rule 1: NEVER let multiple edges share the same path
+- If two edges connect same pair of nodes, use DIFFERENT exit/entry positions
+- Use exitY=0.3 for first edge, exitY=0.7 for second (NOT both 0.5)
+
+### Rule 2: For bidirectional connections (A↔B), use OPPOSITE sides
+- A→B: exit from RIGHT (exitX=1), enter LEFT (entryX=0)
+- B→A: exit from LEFT (exitX=0), enter RIGHT (entryX=1)
+
+### Rule 3: Always specify exitX, exitY, entryX, entryY explicitly
+- Every edge MUST have these 4 attributes in style
+- Example: style="edgeStyle=orthogonalEdgeStyle;exitX=1;exitY=0.3;entryX=0;entryY=0.3;endArrow=classic;"
+
+### Rule 4: Route edges AROUND obstacles (shapes between source/target)
+- Identify ALL shapes between source and target before drawing
+- Use waypoints to route around obstacles (20-30px clearance)
+- NEVER draw lines that cross over other shapes
+
+### Rule 5: Plan layout BEFORE generating XML
+- Organize shapes into visual layers/zones
+- Space shapes 150-200px apart for edge routing channels
+- Prefer layouts where edges flow in one direction
+
+### Rule 6: Use multiple waypoints for complex routing
+<mxCell id="edge1" style="edgeStyle=orthogonalEdgeStyle;exitX=0.5;exitY=1;entryX=0.5;entryY=0;endArrow=classic;" edge="1" parent="1" source="a" target="b">
+  <mxGeometry relative="1" as="geometry">
+    <Array as="points">
+      <mxPoint x="300" y="150"/>
+      <mxPoint x="450" y="150"/>
+    </Array>
+  </mxGeometry>
+</mxCell>
+
+### Rule 7: Use NATURAL connection points
+- NEVER use corners (entryX=1,entryY=1 looks unnatural)
+- TOP-TO-BOTTOM flow: exit bottom (exitY=1), enter top (entryY=0)
+- LEFT-TO-RIGHT flow: exit right (exitX=1), enter left (entryX=0)
+
+## Before Generating, Verify:
+1. Do any edges cross over shapes? → Add waypoints
+2. Do any edges share the same path? → Adjust exit/entry points
+3. Are connection points at corners? → Use edge centers instead
+4. Could shape arrangement reduce crossings? → Revise layout
+
+## Cloud Architecture Diagrams
+For AWS/Azure/GCP/K8s diagrams, ALWAYS call get_shape_library FIRST to discover icons.
+- AWS: style="shape=mxgraph.aws4.ec2"
+- Azure: style="shape=mxgraph.azure2.virtual_machine"
+- GCP: style="shape=mxgraph.gcp2.compute_engine"
+- Kubernetes: style="shape=mxgraph.kubernetes.pod"
+
+## Common Styles
+- Shapes: rounded=1, fillColor=#hex, strokeColor=#hex
+- Edges: endArrow=classic/block/open/none, curved=1, edgeStyle=orthogonalEdgeStyle
+- Text: fontSize=14, fontStyle=1 (bold), align=center/left/right"""
+
         try:
-            from openai import OpenAI
-            client = OpenAI(
-                base_url=self.config.base_url,
-                api_key=self.api_key
+            # Make the tool call
+            tool_result = await self._call_with_tools(
+                client=client,
+                config=config,
+                system_prompt=system_prompt,
+                user_prompt=prompt
             )
 
-            response = client.chat.completions.create(
-                model=self.config.model,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=self.config.temperature,
-                max_tokens=self.config.max_tokens,
-                top_p=self.config.top_p
-            )
-            return response.choices[0].message.content
+            return tool_result
+
         except Exception as e:
-            raise Exception(f"Custom API error: {str(e)}")
+            raise ValueError(f"Failed to generate diagram with {config.provider.value}: {str(e)}")
 
+    async def _call_with_tools(self, client, config: AIModelConfig, system_prompt: str, user_prompt: str) -> Dict[str, Any]:
+        """Make AI call with tool support"""
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt}
+        ]
 
-# Factory function to create LLM manager
-def create_llm_manager(config: LLMConfig) -> LLMManager:
-    """Create an LLM manager for the given configuration"""
-    return LLMManager(config)
+        tools = get_tools_for_ai(config.provider.value)
 
+        if config.provider == Provider.OPENAI or config.provider == Provider.NVIDIA:
+            response = client.chat.completions.create(
+                model=config.model_id,
+                messages=messages,
+                temperature=config.temperature,
+                max_tokens=config.max_tokens,
+                tools=tools,
+                tool_choice="auto",
+                timeout=60.0  # 60 second timeout
+            )
 
-# Test function to validate provider setup
-async def test_llm_provider(config: LLMConfig) -> Dict[str, Any]:
-    """Test if the LLM provider is working"""
-    try:
-        manager = create_llm_manager(config)
-        # Simple test prompt
-        test_prompt = "Generate a simple CSV diagram with just one component: a user."
-        csv_result = await manager.generate_csv(test_prompt)
+            # Process tool calls
+            message = response.choices[0].message
+            if hasattr(message, 'tool_calls') and message.tool_calls:
+                result = await self._process_tool_calls(message.tool_calls)
+                if result:
+                    return result
 
-        return {
-            "success": True,
-            "provider": config.provider.value,
-            "model": config.model,
-            "message": "LLM provider is working correctly",
-            "sample_output": csv_result[:200] + "..." if len(csv_result) > 200 else csv_result
+            # Fallback: check if the response contains XML directly
+            content = message.content or ""
+            if "<mxCell" in content and "vertex=" in content:
+                # Extract XML from response
+                start = content.find("<mxCell")
+                if start >= 0:
+                    xml_content = content[start:]
+                    # Clean up any trailing content
+                    end_markers = ["```", "</mxGraphModel>", "\n\n"]
+                    for marker in end_markers:
+                        end_pos = xml_content.find(marker)
+                        if end_pos >= 0:
+                            xml_content = xml_content[:end_pos]
+                    return {"type": "display_diagram", "xml": xml_content.strip()}
+
+            # Final fallback to text response
+            return {"type": "text", "content": content}
+
+        elif config.provider == Provider.ANTHROPIC:
+            # Anthropic tool calling setup
+            tools_for_anthropic = []
+            for tool in tools:
+                tools_for_anthropic.append({
+                    "name": tool["name"],
+                    "description": tool["description"],
+                    "input_schema": tool["parameters"]
+                })
+
+            response = await client.messages.create(
+                model=config.model_id,
+                max_tokens=config.max_tokens,
+                temperature=config.temperature,
+                system=system_prompt,
+                messages=[{"role": "user", "content": user_prompt}],
+                tools=tools_for_anthropic,
+                tool_choice={"type": "auto"}
+            )
+
+            # Process tool calls for Anthropic
+            if response.stop_reason == "tool_use":
+                return await self._process_anthropic_tool_calls(response.content)
+            else:
+                return {"type": "text", "content": response.content[0].text}
+
+        elif config.provider == Provider.GOOGLE:
+            # Google doesn't support tools well, fallback to text
+            response = await client.generate_content_async(
+                contents=[{"parts": [{"text": f"{system_prompt}\n\nUser: {user_prompt}"}]}],
+                generation_config=genai.types.GenerationConfig(
+                    temperature=config.temperature,
+                    max_output_tokens=config.max_tokens,
+                )
+            )
+            return {"type": "text", "content": response.text}
+
+        elif config.provider == Provider.AZURE:
+            response = client.chat.completions.create(
+                model=config.model_id,
+                messages=messages,
+                temperature=config.temperature,
+                max_tokens=config.max_tokens,
+                tools=tools,
+                tool_choice="auto"
+            )
+
+            message = response.choices[0].message
+            if hasattr(message, 'tool_calls') and message.tool_calls:
+                return await self._process_tool_calls(message.tool_calls)
+            else:
+                return {"type": "text", "content": message.content}
+
+        elif config.provider == Provider.OLLAMA:
+            # Ollama doesn't support tools, fallback to text
+            response = client.chat(
+                model=config.model_id,
+                messages=messages,
+                options={
+                    "temperature": config.temperature,
+                    "num_predict": config.max_tokens,
+                }
+            )
+            return {"type": "text", "content": response['message']['content']}
+
+        else:
+            raise ValueError(f"Provider {config.provider.value} not yet implemented")
+
+    async def _process_tool_calls(self, tool_calls) -> Dict[str, Any]:
+        """Process tool calls from OpenAI/Azure style responses"""
+        results = []
+
+        for tool_call in tool_calls:
+            tool_name = tool_call.function.name
+            tool_args = json.loads(tool_call.function.arguments)
+
+            if tool_name == "display_diagram":
+                # Return the XML directly
+                return {
+                    "type": "display_diagram",
+                    "xml": tool_args["xml"]
+                }
+
+            elif tool_name == "edit_diagram":
+                # Return edit operations in the new format
+                return {
+                    "type": "edit_diagram",
+                    "operations": tool_args.get("operations", [])
+                }
+
+            elif tool_name == "append_diagram":
+                # Return append operation
+                return {
+                    "type": "append_diagram",
+                    "xml": tool_args["xml"]
+                }
+
+            elif tool_name == "get_shape_library":
+                # Return shape library info
+                library_info = shape_library_manager.get_library_info(tool_args["library"])
+                return {
+                    "type": "shape_library",
+                    "library": tool_args["library"],
+                    "info": library_info
+                }
+
+        # If no specific tool result, return general response
+        return {"type": "text", "content": "Tool call processed"}
+
+    async def _process_anthropic_tool_calls(self, content) -> Dict[str, Any]:
+        """Process tool calls from Anthropic responses"""
+        for item in content:
+            if item.type == "tool_use":
+                tool_name = item.name
+                tool_args = item.input
+
+                if tool_name == "display_diagram":
+                    return {
+                        "type": "display_diagram",
+                        "xml": tool_args["xml"]
+                    }
+                elif tool_name == "edit_diagram":
+                    return {
+                        "type": "edit_diagram",
+                        "operations": tool_args.get("operations", [])
+                    }
+                elif tool_name == "append_diagram":
+                    return {
+                        "type": "append_diagram",
+                        "xml": tool_args["xml"]
+                    }
+                elif tool_name == "get_shape_library":
+                    library_info = shape_library_manager.get_library_info(tool_args["library"])
+                    return {
+                        "type": "shape_library",
+                        "library": tool_args["library"],
+                        "info": library_info
+                    }
+
+        return {"type": "text", "content": "No tool calls found"}
+
+    def validate_provider_config(self, provider: Provider, api_key: Optional[str] = None) -> bool:
+        """Validate that provider configuration is complete"""
+        if provider == Provider.OLLAMA:
+            return True  # No API key needed
+
+        required_key = PROVIDER_ENV_VARS.get(provider)
+        if required_key and not (api_key or os.getenv(required_key)):
+            return False
+
+        if provider == Provider.AZURE:
+            has_base_url = bool(os.getenv("AZURE_BASE_URL"))
+            has_resource_name = bool(os.getenv("AZURE_RESOURCE_NAME"))
+            return has_base_url or has_resource_name
+
+        return True
+
+    def get_available_providers(self) -> List[Dict[str, Any]]:
+        """Get list of available providers with their status"""
+        providers = []
+
+        for provider in Provider:
+            is_configured = self.validate_provider_config(provider)
+            providers.append({
+                "name": provider.value,
+                "label": provider.value.title(),
+                "configured": is_configured,
+                "requires_key": provider != Provider.OLLAMA,
+                "default_model": self._get_default_model(provider),
+            })
+
+        return providers
+
+    def _get_default_model(self, provider: Provider) -> str:
+        """Get default model for provider"""
+        defaults = {
+            Provider.OPENAI: "gpt-4o",
+            Provider.ANTHROPIC: "claude-3-5-sonnet-20241022",
+            Provider.GOOGLE: "gemini-pro",
+            Provider.AZURE: "gpt-4o",
+            Provider.OLLAMA: "llama3.2",
+            Provider.NVIDIA: "meta/llama-3.1-70b-instruct",
         }
-    except Exception as e:
-        return {
-            "success": False,
-            "provider": config.provider.value,
-            "error": str(e),
-            "message": f"Failed to connect to {config.provider.value}: {str(e)}"
-        }
+        return defaults.get(provider, "gpt-4o")
+
+
+# Global instance
+ai_provider_manager = AIProviderManager()
+
+
+def get_ai_provider_manager() -> AIProviderManager:
+    """Get the global AI provider manager instance"""
+    return ai_provider_manager

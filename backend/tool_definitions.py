@@ -5,7 +5,6 @@ Inspired by next-ai-draw-io's sophisticated tool system
 
 from typing import Dict, Any, List, Optional
 from pydantic import BaseModel
-import json
 
 
 class ToolParameter(BaseModel):
@@ -18,9 +17,16 @@ class DisplayDiagramParams(ToolParameter):
     xml: str
 
 
+class DiagramOperation(BaseModel):
+    """Single diagram edit operation"""
+    operation: str  # "update", "add", or "delete"
+    cell_id: str
+    new_xml: Optional[str] = None  # Required for update/add, optional for delete
+
+
 class EditDiagramParams(ToolParameter):
     """Parameters for edit_diagram tool"""
-    edits: List[Dict[str, str]]
+    operations: List[DiagramOperation]
 
 
 class AppendDiagramParams(ToolParameter):
@@ -67,24 +73,50 @@ TOOLS = [
     ),
     Tool(
         name="edit_diagram",
-        description="Edit specific parts of the EXISTING diagram. Use this when making small targeted changes like adding/removing elements, changing labels, or adjusting properties. This is more efficient than regenerating the entire diagram.",
+        description="""Edit the current diagram by ID-based operations (update/add/delete cells).
+
+Operations:
+- update: Replace an existing cell by its id. Provide cell_id and complete new_xml.
+- add: Add a new cell. Provide cell_id (new unique id) and new_xml.
+- delete: Remove a cell by its id. Only cell_id is needed.
+
+For update/add, new_xml must be a complete mxCell element including mxGeometry.
+
+⚠️ JSON ESCAPING: Every " inside new_xml MUST be escaped as \\". Example: id=\\"5\\" value=\\"Label\\"
+
+Example - Add a rectangle:
+{"operations": [{"operation": "add", "cell_id": "rect-1", "new_xml": "<mxCell id=\\"rect-1\\" value=\\"Hello\\" style=\\"rounded=0;\\" vertex=\\"1\\" parent=\\"1\\"><mxGeometry x=\\"100\\" y=\\"100\\" width=\\"120\\" height=\\"60\\" as=\\"geometry\\"/></mxCell>"}]}
+
+Example - Delete a cell:
+{"operations": [{"operation": "delete", "cell_id": "rect-1"}]}""",
         parameters={
             "type": "object",
             "properties": {
-                "edits": {
+                "operations": {
                     "type": "array",
                     "items": {
                         "type": "object",
                         "properties": {
-                            "search": {"type": "string", "description": "XML fragment to find and replace"},
-                            "replace": {"type": "string", "description": "New XML fragment to replace with"}
+                            "operation": {
+                                "type": "string",
+                                "enum": ["update", "add", "delete"],
+                                "description": "Operation to perform: add, update, or delete"
+                            },
+                            "cell_id": {
+                                "type": "string",
+                                "description": "The id of the mxCell. Must match the id attribute in new_xml."
+                            },
+                            "new_xml": {
+                                "type": "string",
+                                "description": "Complete mxCell XML element (required for update/add)"
+                            }
                         },
-                        "required": ["search", "replace"]
+                        "required": ["operation", "cell_id"]
                     },
-                    "description": "Array of search-replace operations on the diagram XML"
+                    "description": "Array of operations to apply to the diagram"
                 }
             },
-            "required": ["edits"]
+            "required": ["operations"]
         }
     ),
     Tool(
